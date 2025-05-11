@@ -1,1 +1,1 @@
-web: gunicorn tradingview_zerodha_ver2:app
+web: gunicorn tradingview_zerodha_ver4:app
