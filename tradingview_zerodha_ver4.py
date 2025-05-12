@@ -71,3 +71,8 @@ def webhook():
     except Exception as e:
         logging.exception("❌ Exception during webhook processing")
         return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
+
+# === Run App Locally and on Railway ===
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
