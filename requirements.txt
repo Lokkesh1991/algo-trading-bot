@@ -1,4 +1,4 @@
-Flask
+flask
 gunicorn
-kiteconnect
 python-dotenv
+kiteconnect
