@@ -19,7 +19,6 @@ PAPER_TRADE = True  # ✅ Set to False to place real trades
 load_dotenv()
 API_KEY = os.getenv("KITE_API_KEY")
 app = Flask(__name__)
-application = app  # Gunicorn compatibility
 
 # === LOGGING ===
 os.makedirs("logs", exist_ok=True)
