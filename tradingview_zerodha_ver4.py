@@ -19,6 +19,7 @@ PAPER_TRADE = True  # ✅ Set to False to place real trades
 load_dotenv()
 API_KEY = os.getenv("KITE_API_KEY")
 app = Flask(__name__)
+application = app  # Gunicorn compatibility
 
 # === LOGGING ===
 os.makedirs("logs", exist_ok=True)
@@ -71,8 +72,3 @@ def webhook():
     except Exception as e:
         logging.exception("❌ Exception during webhook processing")
         return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
-
-# === Run App in Railway or Locally (Required for Production) ===
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
