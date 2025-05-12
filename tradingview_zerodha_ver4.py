@@ -1,10 +1,16 @@
-from flask import Flask, request, jsonify 
-from kiteconnect import KiteConnect
-import logging
-import os
-import json
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
+# === Safe Startup Logging (Gunicorn crash protection) ===
+print("🚀 Starting tradingview_zerodha_ver4...")
+try:
+    from flask import Flask, request, jsonify
+    from kiteconnect import KiteConnect
+    import logging
+    import os
+    import json
+    from datetime import datetime, timedelta
+    from dotenv import load_dotenv
+    print("✅ All core imports loaded successfully")
+except Exception as e:
+    print("❌ Startup crash during import:", str(e))
 
 # === CONFIG ===
 PAPER_TRADE = True  # ✅ Set to False to place real trades
