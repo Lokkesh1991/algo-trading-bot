@@ -197,24 +197,34 @@ def handle_trade_decision(kite, symbol, signals):
 # === Webhook Endpoint ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json
-    symbol = data.get("symbol")
-    signal = data.get("signal")
-    timeframe = data.get("timeframe")
+    try:
+        logging.info("📩 Incoming webhook received.")
+        data = request.json
+        symbol = data.get("symbol")
+        signal = data.get("signal")
+        timeframe = data.get("timeframe")
 
-    if not symbol or not signal or not timeframe:
-        return jsonify({"status": "❌ Invalid data"})
+        if not symbol or not signal or not timeframe:
+            logging.warning("⚠️ Missing required fields in webhook payload.")
+            return jsonify({"status": "❌ Invalid data"}), 400
 
-    if symbol not in signals:
-        signals[symbol] = {"3m": "", "5m": "", "10m": "", "last_action": "NONE"}
+        if symbol not in signals:
+            signals[symbol] = {"3m": "", "5m": "", "10m": "", "last_action": "NONE"}
 
-    signals[symbol][timeframe] = signal.upper()
+        signals[symbol][timeframe] = signal.upper()
 
-    kite = get_kite_client()
-    if not kite:
-        return jsonify({"status": "❌ Kite client init failed"})
+        kite = get_kite_client()
+        if not kite:
+            logging.error("❌ Kite client is None. Exiting webhook early.")
+            return jsonify({"status": "❌ Kite client init failed"}), 500
 
-    auto_rollover_positions(kite, symbol)
-    handle_trade_decision(kite, symbol, signals)
+        auto_rollover_positions(kite, symbol)
+        handle_trade_decision(kite, symbol, signals)
 
-    return jsonify({"status": "✅ Webhook processed"})
+        logging.info("✅ Webhook processed successfully.")
+        return jsonify({"status": "✅ Webhook processed"})
+
+    except Exception as e:
+        logging.exception("❌ Exception during webhook processing")
+        return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
+
