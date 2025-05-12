@@ -21,7 +21,9 @@ API_KEY = os.getenv("KITE_API_KEY")
 app = Flask(__name__)
 
 # === LOGGING ===
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
+    filename="logs/server_debug.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
