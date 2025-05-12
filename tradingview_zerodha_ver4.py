@@ -36,7 +36,11 @@ def home():
 # === Kite Client ===
 def get_kite_client():
     try:
-        with open("token.json") as f:
+        token_path = "token.json"
+        if not os.path.exists(token_path):
+            logging.warning("⚠️ token.json not found. Returning None.")
+            return None
+        with open(token_path) as f:
             token_data = json.load(f)
         kite = KiteConnect(api_key=API_KEY)
         kite.set_access_token(token_data["access_token"])
