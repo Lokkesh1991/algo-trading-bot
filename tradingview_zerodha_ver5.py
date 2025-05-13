@@ -1,4 +1,4 @@
-# === Startup Banner ===
+# === Safe Startup Logging (Flask Standalone for Railway) ===
 print("🚀 Starting tradingview_zerodha_ver5...")
 
 from flask import Flask, request, jsonify
@@ -9,27 +9,28 @@ import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
-# === ENV and API Setup ===
+# === Load .env Variables ===
 load_dotenv()
 API_KEY = os.getenv("KITE_API_KEY")
 
+# === Flask App ===
 app = Flask(__name__)
-os.makedirs("logs", exist_ok=True)
 
-# === Logging Setup ===
+# === Logging ===
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     filename="logs/tradingview_zerodha.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+# === In-memory signal store ===
 signals = {}
 
 @app.route("/")
 def home():
     return "✅ Botelyes Trading Webhook is Running!"
 
-# === Kite Initialization ===
 def get_kite_client():
     try:
         with open("token.json") as f:
@@ -41,7 +42,6 @@ def get_kite_client():
         logging.error(f"❌ Kite init error: {str(e)}")
         return None
 
-# === Position Helper ===
 def get_position_quantity(kite, tradingsymbol):
     try:
         positions = kite.positions()["net"]
@@ -53,13 +53,13 @@ def get_position_quantity(kite, tradingsymbol):
         logging.error(f"⚠️ Failed to fetch positions: {e}")
         return 0
 
-# === Contract Selection ===
 def get_active_contract(symbol):
     today = datetime.now().date()
-    last_day = datetime(today.year, today.month + 1, 1) - timedelta(days=1) if today.month < 12 else datetime(today.year + 1, 1, 1) - timedelta(days=1)
+    last_day = datetime(today.year, today.month + 1, 1).date() - timedelta(days=1) if today.month < 12 else datetime(today.year + 1, 1, 1).date() - timedelta(days=1)
     while last_day.weekday() != 0:
         last_day -= timedelta(days=1)
     rollover_cutoff = last_day - timedelta(days=4)
+
     if today > rollover_cutoff:
         next_month = today.month + 1 if today.month < 12 else 1
         next_year = today.year if today.month < 12 else today.year + 1
@@ -67,10 +67,9 @@ def get_active_contract(symbol):
     else:
         return f"{symbol}{str(today.year)[2:]}{datetime(today.year, today.month, 1).strftime('%b').upper()}FUT"
 
-# === Auto-Rollover Logic ===
 def auto_rollover_positions(kite, symbol):
     today = datetime.now().date()
-    last_day = datetime(today.year, today.month + 1, 1) - timedelta(days=1) if today.month < 12 else datetime(today.year + 1, 1, 1) - timedelta(days=1)
+    last_day = datetime(today.year, today.month + 1, 1).date() - timedelta(days=1) if today.month < 12 else datetime(today.year + 1, 1, 1).date() - timedelta(days=1)
     while last_day.weekday() != 0:
         last_day -= timedelta(days=1)
     rollover_cutoff = last_day - timedelta(days=4)
@@ -82,13 +81,24 @@ def auto_rollover_positions(kite, symbol):
         nxt = f"{symbol}{str(next_year)[2:]}{datetime(next_year, next_month, 1).strftime('%b').upper()}FUT"
         qty = get_position_quantity(kite, current)
         if qty != 0:
-            logging.info(f"🔁 Rollover from {current} to {nxt}")
+            logging.info(f"🔁 Rollover triggered for {symbol} from {current} to {nxt}")
             exit_position(kite, current, qty)
             enter_position(kite, nxt, "LONG" if qty > 0 else "SHORT")
 
-# === Entry & Exit ===
 def enter_position(kite, symbol, side):
     entry_time = datetime.now()
+    log_data = {
+        "symbol": symbol,
+        "direction": side,
+        "entry_time": entry_time.strftime('%Y-%m-%d %H:%M:%S'),
+        "exit_time": None,
+        "qty": 1,
+        "pnl": None
+    }
+    with open(f"logs/{symbol}_trades.json", "a") as f:
+        f.write(json.dumps(log_data) + "\n")
+    with open("trades_log.txt", "a") as f:
+        f.write(f"{entry_time} - ENTER {side} - {symbol}\n")
     txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
     try:
         kite.place_order(
@@ -105,6 +115,27 @@ def enter_position(kite, symbol, side):
         logging.error(f"❌ Entry failed: {e}")
 
 def exit_position(kite, symbol, current_qty):
+    exit_time = datetime.now()
+    direction = "LONG" if current_qty > 0 else "SHORT"
+    try:
+        ltp = kite.ltp(f'NFO:{symbol}')[f'NFO:{symbol}']['last_price']
+    except Exception as e:
+        logging.error(f"⚠️ Could not fetch LTP: {e}")
+        ltp = None
+
+    log_data = {
+        "symbol": symbol,
+        "direction": direction,
+        "exit_time": exit_time.strftime('%Y-%m-%d %H:%M:%S'),
+        "qty": abs(current_qty),
+        "exit_price": ltp,
+        "pnl": None
+    }
+    with open(f"logs/{symbol}_trades.json", "a") as f:
+        f.write(json.dumps(log_data) + "\n")
+    with open("trades_log.txt", "a") as f:
+        f.write(f"{exit_time} - EXIT {direction} - {symbol}\n")
+
     txn = kite.TRANSACTION_TYPE_SELL if current_qty > 0 else kite.TRANSACTION_TYPE_BUY
     try:
         kite.place_order(
@@ -116,11 +147,10 @@ def exit_position(kite, symbol, current_qty):
             product="NRML",
             order_type="MARKET"
         )
-        logging.info(f"🚪 Exited {symbol} ({current_qty})")
+        logging.info(f"🚪 Exited position for {symbol}")
     except Exception as e:
         logging.error(f"❌ Exit failed: {e}")
 
-# === Core Logic ===
 def handle_trade_decision(kite, symbol, signals):
     tf_signals = [signals[symbol].get(tf, "") for tf in ["3m", "5m", "10m"]]
     if tf_signals[0] == tf_signals[1] == tf_signals[2] and tf_signals[0] in ["LONG", "SHORT"]:
@@ -135,11 +165,10 @@ def handle_trade_decision(kite, symbol, signals):
             enter_position(kite, tradingsymbol, new_signal)
             signals[symbol]["last_action"] = new_signal
         else:
-            logging.info(f"✅ Already in {new_signal} for {symbol}")
+            logging.info(f"✅ Already in {new_signal} for {symbol}. No action.")
     else:
-        logging.info(f"❌ Signals not aligned for {symbol}: {tf_signals}")
+        logging.info(f"❌ {symbol} signals not aligned: {tf_signals}")
 
-# === Webhook ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -164,11 +193,11 @@ def webhook():
         handle_trade_decision(kite, symbol, signals)
 
         return jsonify({"status": "✅ Webhook processed"})
-    except Exception as e:
-        logging.exception("❌ Exception during webhook")
-        return jsonify({"status": "❌ Exception", "error": str(e)})
 
-# === Local/Railway App Runner ===
+    except Exception as e:
+        logging.exception("❌ Exception during webhook processing")
+        return jsonify({"status": "❌ Exception", "error": str(e)}), 500
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
