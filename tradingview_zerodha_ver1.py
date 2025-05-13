@@ -19,8 +19,6 @@ def webhook():
         return jsonify({"status": "❌ Missing symbol or signal"}), 400
 
     print(f"🚨 Received Trade Signal: {symbol} - {signal}")
-    return jsonify({"status": f"✅ Received signal for {symbol}: {signal}"}), 200
+    return jsonify({"status": f"✅ Received signal for {symbol}: {signal}"}), 200)
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# 🔴 Do not include: app.run(...) — Gunicorn handles that
