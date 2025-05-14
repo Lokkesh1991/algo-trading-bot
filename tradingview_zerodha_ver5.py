@@ -1,4 +1,3 @@
-# === Safe Startup Logging (Railway-compatible) ===
 print("🚀 Starting tradingview_zerodha_ver5...")
 
 from flask import Flask, request, jsonify
@@ -17,7 +16,7 @@ API_KEY = os.getenv("KITE_API_KEY")
 # === Flask App ===
 app = Flask(__name__)
 
-# === Logging: File + Console (Railway needs StreamHandler)
+# === Logging Setup ===
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -28,14 +27,13 @@ logging.basicConfig(
     ]
 )
 
-# === In-memory signal tracker ===
+# === In-memory Signal Store ===
 signals = {}
 
 @app.route("/")
 def home():
     return "✅ Botelyes Trading Webhook is Running!"
 
-# === Kite Client ===
 def get_kite_client():
     try:
         with open("token.json") as f:
@@ -47,7 +45,6 @@ def get_kite_client():
         logging.error(f"❌ Failed to initialize Kite client: {str(e)}")
         return None
 
-# === Position Checker ===
 def get_position_quantity(kite, tradingsymbol):
     try:
         positions = kite.positions()["net"]
@@ -59,13 +56,11 @@ def get_position_quantity(kite, tradingsymbol):
         logging.error(f"⚠️ Failed to fetch positions: {e}")
         return 0
 
-# === Active Contract ===
 def get_active_contract(symbol):
     today = datetime.now().date()
     current_month = today.month
     current_year = today.year
 
-    # Get last Monday of the current month
     next_month_first = datetime(current_year + int(current_month == 12), (current_month % 12) + 1, 1)
     last_day = next_month_first - timedelta(days=1)
     while last_day.weekday() != 0:
@@ -80,7 +75,6 @@ def get_active_contract(symbol):
     else:
         return f"{symbol}{str(current_year)[2:]}{datetime(current_year, current_month, 1).strftime('%b').upper()}FUT"
 
-# === Auto Rollover ===
 def auto_rollover_positions(kite, symbol):
     today = datetime.now().date()
     current_month = today.month
@@ -105,7 +99,6 @@ def auto_rollover_positions(kite, symbol):
             exit_position(kite, current_contract, qty)
             enter_position(kite, next_contract, "LONG" if qty > 0 else "SHORT")
 
-# === Order Entry ===
 def enter_position(kite, symbol, side):
     entry_time = datetime.now()
     log_data = {
@@ -132,7 +125,6 @@ def enter_position(kite, symbol, side):
     except Exception as e:
         logging.error(f"❌ Entry failed: {e}")
 
-# === Exit Logic ===
 def exit_position(kite, symbol, qty):
     try:
         ltp = kite.ltp(f'NFO:{symbol}')[f'NFO:{symbol}']['last_price']
@@ -155,7 +147,6 @@ def exit_position(kite, symbol, qty):
     except Exception as e:
         logging.error(f"❌ Exit failed: {e}")
 
-# === Decision Core ===
 def handle_trade_decision(kite, symbol, signals):
     tf_signals = [signals[symbol].get(tf, "") for tf in ["3m", "5m", "10m"]]
     if tf_signals[0] == tf_signals[1] == tf_signals[2] and tf_signals[0] in ["LONG", "SHORT"]:
@@ -174,16 +165,18 @@ def handle_trade_decision(kite, symbol, signals):
     else:
         logging.info(f"❌ Not aligned for {symbol}: {tf_signals}")
 
-# === Webhook ===
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         data = request.json
-        symbol = data.get("symbol")
+        raw_symbol = data.get("symbol")
         signal = data.get("signal")
         timeframe = data.get("timeframe")
 
-        logging.info(f"📩 Webhook received: {data}")
+        # Clean up symbol: HDFCBANK1! → HDFCBANK
+        symbol = raw_symbol.replace("1!", "").replace("!", "").upper()
+
+        logging.info(f"📩 Webhook received: raw={raw_symbol}, cleaned={symbol}, signal={signal}, timeframe={timeframe}")
 
         if not symbol or not signal or not timeframe:
             return jsonify({"status": "❌ Invalid data"}), 400
@@ -206,7 +199,6 @@ def webhook():
         logging.error(f"❌ Exception: {e}")
         return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
 
-# === Run App Locally/Railway ===
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
