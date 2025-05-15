@@ -167,7 +167,10 @@ def webhook():
         raw_symbol = data.get("symbol", "")
         signal = data.get("signal", "").upper()
         timeframe = data.get("timeframe", "")
-        cleaned_symbol = re.sub(r'\d+', '', raw_symbol).strip().upper()
+
+        # === NEW CLEANING LOGIC ===
+        cleaned_symbol = re.sub(r'[^A-Z]', '', raw_symbol.upper())
+
         logging.info(f"📩 Webhook received: raw={raw_symbol}, cleaned={cleaned_symbol}, signal={signal}, timeframe={timeframe}")
         if not cleaned_symbol or not signal or not timeframe:
             return jsonify({"status": "❌ Invalid data"}), 400
