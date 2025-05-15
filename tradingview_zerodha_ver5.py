@@ -30,7 +30,7 @@ logging.basicConfig(
 
 # === In-memory signal store ===
 signals = {}
-lot_size_cache = {}  # <== Added cache for lot size lookup
+lot_size_cache = {}
 
 @app.route("/")
 def home():
@@ -188,7 +188,10 @@ def webhook():
         data = request.json
         raw_symbol = data.get("symbol", "")
         signal = data.get("signal", "").lower()
-        timeframe = data.get("timeframe", "")
+        timeframe_raw = data.get("timeframe", "").lower()
+        timeframe = timeframe_raw.replace("minutes", "m").replace("min", "m")
+        if not timeframe.endswith("m"):
+            timeframe += "m"
 
         if signal == "buy":
             signal = "LONG"
@@ -207,6 +210,7 @@ def webhook():
             signals[cleaned_symbol] = {"3m": "", "5m": "", "10m": "", "last_action": "NONE"}
 
         signals[cleaned_symbol][timeframe] = signal
+        logging.info(f"🧪 Updated signal memory: {signals[cleaned_symbol]}")
 
         kite = get_kite_client()
         if not kite:
