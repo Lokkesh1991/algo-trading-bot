@@ -165,23 +165,35 @@ def webhook():
     try:
         data = request.json
         raw_symbol = data.get("symbol", "")
-        signal = data.get("signal", "").upper()
+        signal = data.get("signal", "").lower()
         timeframe = data.get("timeframe", "")
 
-        # === NEW CLEANING LOGIC ===
+        # === Convert signals if strategy.order.action is used ===
+        if signal == "buy":
+            signal = "LONG"
+        elif signal == "sell":
+            signal = "SHORT"
+        else:
+            signal = signal.upper()
+
         cleaned_symbol = re.sub(r'[^A-Z]', '', raw_symbol.upper())
 
         logging.info(f"📩 Webhook received: raw={raw_symbol}, cleaned={cleaned_symbol}, signal={signal}, timeframe={timeframe}")
         if not cleaned_symbol or not signal or not timeframe:
             return jsonify({"status": "❌ Invalid data"}), 400
+
         if cleaned_symbol not in signals:
             signals[cleaned_symbol] = {"3m": "", "5m": "", "10m": "", "last_action": "NONE"}
+
         signals[cleaned_symbol][timeframe] = signal
+
         kite = get_kite_client()
         if not kite:
             return jsonify({"status": "❌ Kite client init failed"}), 500
+
         auto_rollover_positions(kite, cleaned_symbol)
         handle_trade_decision(kite, cleaned_symbol, signals)
+
         return jsonify({"status": "✅ Webhook processed"})
     except Exception as e:
         logging.error(f"❌ Exception: {e}")
