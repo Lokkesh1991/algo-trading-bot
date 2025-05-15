@@ -30,6 +30,7 @@ logging.basicConfig(
 
 # === In-memory signal store ===
 signals = {}
+lot_size_cache = {}  # <== Added cache for lot size lookup
 
 @app.route("/")
 def home():
@@ -46,6 +47,24 @@ def get_kite_client():
     except Exception as e:
         logging.error(f"❌ Failed to initialize Kite client: {str(e)}")
         return None
+
+# === Lot Size Resolver ===
+def get_lot_size(kite, tradingsymbol):
+    if tradingsymbol in lot_size_cache:
+        return lot_size_cache[tradingsymbol]
+    try:
+        instruments = kite.instruments("NFO")
+        for item in instruments:
+            if item["tradingsymbol"] == tradingsymbol:
+                lot_size = item["lot_size"]
+                lot_size_cache[tradingsymbol] = lot_size
+                logging.info(f"📦 Lot size for {tradingsymbol}: {lot_size}")
+                return lot_size
+        logging.warning(f"⚠️ Lot size not found for {tradingsymbol}, defaulting to 1")
+        return 1
+    except Exception as e:
+        logging.error(f"❌ Error fetching lot size: {e}")
+        return 1
 
 # === Position Lookup ===
 def get_position_quantity(kite, tradingsymbol):
@@ -102,26 +121,29 @@ def auto_rollover_positions(kite, symbol):
 # === Order Logic ===
 def enter_position(kite, symbol, side):
     entry_time = datetime.now()
+    lot_qty = get_lot_size(kite, symbol)
     log_data = {
         "symbol": symbol,
         "direction": side,
         "entry_time": entry_time.strftime('%Y-%m-%d %H:%M:%S'),
-        "qty": 1
+        "qty": lot_qty
     }
     with open(f"logs/{symbol}_trades.json", "a") as f:
         f.write(json.dumps(log_data) + "\n")
+
     txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
+
     try:
         kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange="NFO",
             tradingsymbol=symbol,
             transaction_type=txn,
-            quantity=1,
+            quantity=lot_qty,
             product="NRML",
             order_type="MARKET"
         )
-        logging.info(f"✅ Entered {side} for {symbol}")
+        logging.info(f"✅ Entered {side} for {symbol} with quantity={lot_qty}")
     except Exception as e:
         logging.error(f"❌ Entry failed: {e}")
 
@@ -168,7 +190,6 @@ def webhook():
         signal = data.get("signal", "").lower()
         timeframe = data.get("timeframe", "")
 
-        # === Convert signals if strategy.order.action is used ===
         if signal == "buy":
             signal = "LONG"
         elif signal == "sell":
