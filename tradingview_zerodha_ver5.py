@@ -64,12 +64,10 @@ def get_active_contract(symbol):
     today = datetime.now().date()
     current_month = today.month
     current_year = today.year
-
     next_month_first = datetime(current_year + int(current_month == 12), (current_month % 12) + 1, 1)
     last_day = next_month_first - timedelta(days=1)
     while last_day.weekday() != 0:
         last_day -= timedelta(days=1)
-
     rollover_cutoff = last_day.date() - timedelta(days=4)
 
     if today > rollover_cutoff:
@@ -78,6 +76,28 @@ def get_active_contract(symbol):
         return f"{symbol}{str(next_year)[2:]}{datetime(next_year, next_month, 1).strftime('%b').upper()}FUT"
     else:
         return f"{symbol}{str(current_year)[2:]}{datetime(current_year, current_month, 1).strftime('%b').upper()}FUT"
+
+# === Auto Rollover ===
+def auto_rollover_positions(kite, symbol):
+    today = datetime.now().date()
+    current_month = today.month
+    current_year = today.year
+    next_month_first = datetime(current_year + int(current_month == 12), (current_month % 12) + 1, 1)
+    last_day = next_month_first - timedelta(days=1)
+    while last_day.weekday() != 0:
+        last_day -= timedelta(days=1)
+    rollover_cutoff = last_day.date() - timedelta(days=4)
+
+    if today > rollover_cutoff:
+        current_contract = f"{symbol}{str(current_year)[2:]}{datetime(current_year, current_month, 1).strftime('%b').upper()}FUT"
+        next_month = current_month + 1 if current_month < 12 else 1
+        next_year = current_year if current_month < 12 else current_year + 1
+        next_contract = f"{symbol}{str(next_year)[2:]}{datetime(next_year, next_month, 1).strftime('%b').upper()}FUT"
+        qty = get_position_quantity(kite, current_contract)
+        if qty != 0:
+            logging.info(f"🔁 Rollover from {current_contract} to {next_contract}")
+            exit_position(kite, current_contract, qty)
+            enter_position(kite, next_contract, "LONG" if qty > 0 else "SHORT")
 
 # === Order Logic ===
 def enter_position(kite, symbol, side):
@@ -90,7 +110,6 @@ def enter_position(kite, symbol, side):
     }
     with open(f"logs/{symbol}_trades.json", "a") as f:
         f.write(json.dumps(log_data) + "\n")
-
     txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
     try:
         kite.place_order(
@@ -108,11 +127,12 @@ def enter_position(kite, symbol, side):
 
 def exit_position(kite, symbol, qty):
     try:
+        txn = KiteConnect.TRANSACTION_TYPE_SELL if qty > 0 else KiteConnect.TRANSACTION_TYPE_BUY
         kite.place_order(
             variety=kite.VARIETY_REGULAR,
             exchange="NFO",
             tradingsymbol=symbol,
-            transaction_type=KiteConnect.TRANSACTION_TYPE_SELL if qty > 0 else KiteConnect.TRANSACTION_TYPE_BUY,
+            transaction_type=txn,
             quantity=abs(qty),
             product="NRML",
             order_type="MARKET"
@@ -129,7 +149,6 @@ def handle_trade_decision(kite, symbol, signals):
         last_action = signals[symbol].get("last_action", "NONE")
         tradingsymbol = get_active_contract(symbol)
         current_qty = get_position_quantity(kite, tradingsymbol)
-
         if new_signal != last_action:
             if current_qty != 0:
                 exit_position(kite, tradingsymbol, current_qty)
@@ -148,29 +167,19 @@ def webhook():
         raw_symbol = data.get("symbol", "")
         signal = data.get("signal", "").upper()
         timeframe = data.get("timeframe", "")
-
-        # === Clean symbol ===
         cleaned_symbol = re.sub(r'\d+', '', raw_symbol).strip().upper()
-
         logging.info(f"📩 Webhook received: raw={raw_symbol}, cleaned={cleaned_symbol}, signal={signal}, timeframe={timeframe}")
-
         if not cleaned_symbol or not signal or not timeframe:
             return jsonify({"status": "❌ Invalid data"}), 400
-
         if cleaned_symbol not in signals:
             signals[cleaned_symbol] = {"3m": "", "5m": "", "10m": "", "last_action": "NONE"}
-
         signals[cleaned_symbol][timeframe] = signal
-
         kite = get_kite_client()
         if not kite:
             return jsonify({"status": "❌ Kite client init failed"}), 500
-
         auto_rollover_positions(kite, cleaned_symbol)
         handle_trade_decision(kite, cleaned_symbol, signals)
-
         return jsonify({"status": "✅ Webhook processed"})
-
     except Exception as e:
         logging.error(f"❌ Exception: {e}")
         return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
