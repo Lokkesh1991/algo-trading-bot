@@ -200,6 +200,10 @@ def webhook():
         else:
             signal = signal.upper()
 
+        if signal not in ["LONG", "SHORT"]:
+            logging.info(f"🚫 Ignored non-entry signal: {signal}")
+            return jsonify({"status": "ignored"}), 200
+
         cleaned_symbol = re.sub(r'[^A-Z]', '', raw_symbol.upper())
 
         logging.info(f"📩 Webhook received: raw={raw_symbol}, cleaned={cleaned_symbol}, signal={signal}, timeframe={timeframe}")
