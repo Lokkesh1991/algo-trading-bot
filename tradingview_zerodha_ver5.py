@@ -48,6 +48,10 @@ def get_kite_client():
         logging.error(f"❌ Failed to initialize Kite client: {str(e)}")
         return None
 
+# === Helper: Gold Checker ===
+def is_gold_symbol(symbol):
+    return "GOLD" in symbol.upper()
+
 # === Lot Size Resolver ===
 def get_lot_size(kite, tradingsymbol):
     if tradingsymbol in lot_size_cache:
@@ -76,6 +80,20 @@ def get_position_quantity(kite, tradingsymbol):
         return 0
     except Exception as e:
         logging.error(f"⚠️ Failed to fetch positions: {e}")
+        return 0
+
+# === Stock/Index Position Count ===
+def get_total_stock_positions(kite):
+    try:
+        active_positions = kite.positions()["net"]
+        count = 0
+        for pos in active_positions:
+            if pos["exchange"] == "NFO" and abs(pos["quantity"]) > 0:
+                if not is_gold_symbol(pos["tradingsymbol"]):
+                    count += 1
+        return count
+    except Exception as e:
+        logging.error(f"❌ Error counting active stock positions: {e}")
         return 0
 
 # === Contract Resolver ===
@@ -171,7 +189,13 @@ def handle_trade_decision(kite, symbol, signals):
         last_action = signals[symbol].get("last_action", "NONE")
         tradingsymbol = get_active_contract(symbol)
         current_qty = get_position_quantity(kite, tradingsymbol)
+
         if new_signal != last_action:
+            total_positions = get_total_stock_positions(kite)
+            if current_qty == 0 and total_positions >= 9 and not is_gold_symbol(tradingsymbol):
+                logging.warning(f"🚫 Max 9 stock/index positions reached. Skipping trade for {symbol}")
+                return
+
             if current_qty != 0:
                 exit_position(kite, tradingsymbol, current_qty)
             enter_position(kite, tradingsymbol, new_signal)
@@ -232,3 +256,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
