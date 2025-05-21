@@ -192,8 +192,8 @@ def handle_trade_decision(kite, symbol, signals):
 
         if new_signal != last_action:
             total_positions = get_total_stock_positions(kite)
-            if current_qty == 0 and total_positions >= 9 and not is_gold_symbol(tradingsymbol):
-                logging.warning(f"🚫 Max 9 stock/index positions reached. Skipping trade for {symbol}")
+            if current_qty == 0 and total_positions >= 12 and not is_gold_symbol(tradingsymbol):
+                logging.warning(f"🚫 Max 12 stock/index positions reached. Skipping trade for {symbol}")
                 return
 
             if current_qty != 0:
@@ -256,4 +256,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
