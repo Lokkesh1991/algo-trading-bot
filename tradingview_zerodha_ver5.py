@@ -184,8 +184,15 @@ def exit_position(kite, symbol, qty):
 # === Decision Logic ===
 def handle_trade_decision(kite, symbol, signals):
     tf_signals = [signals[symbol].get(tf, "") for tf in ["3m", "5m", "10m"]]
-    if tf_signals[0] == tf_signals[1] == tf_signals[2] and tf_signals[0] in ["LONG", "SHORT"]:
-        new_signal = tf_signals[0]
+    signal_counts = {"LONG": tf_signals.count("LONG"), "SHORT": tf_signals.count("SHORT")}
+
+    new_signal = None
+    if signal_counts["LONG"] >= 2:
+        new_signal = "LONG"
+    elif signal_counts["SHORT"] >= 2:
+        new_signal = "SHORT"
+
+    if new_signal:
         last_action = signals[symbol].get("last_action", "NONE")
         tradingsymbol = get_active_contract(symbol)
         current_qty = get_position_quantity(kite, tradingsymbol)
