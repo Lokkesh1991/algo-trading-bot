@@ -32,7 +32,7 @@ logging.basicConfig(
 signals = {}
 lot_size_cache = {}
 last_trade_times = {}  # Track last trade times
-last_exit_times = {}  # NEW: Track last exit times
+last_exit_times = {}  # Track last exit times
 
 @app.route("/")
 def home():
@@ -140,26 +140,15 @@ def auto_rollover_positions(kite, symbol):
 
 # === Order Logic ===
 def enter_position(kite, symbol, side):
-    entry_time = datetime.now()
-    if symbol in last_trade_times:
-        if (entry_time - last_trade_times[symbol]).total_seconds() < 10:
-            logging.warning(f"⏱️ Skipped duplicate entry for {symbol} within 10s block")
-            return
-    if symbol in last_exit_times:
-        if (entry_time - last_exit_times[symbol]).total_seconds() < 10:
-            logging.warning(f"⏳ Skipped entry for {symbol} - cooldown after exit")
-            return
+    now = datetime.now()
+    if symbol in last_trade_times and (now - last_trade_times[symbol]).total_seconds() < 10:
+        logging.warning(f"⏱️ Skipping duplicate entry for {symbol} within 10s")
+        return
+    if symbol in last_exit_times and (now - last_exit_times[symbol]).total_seconds() < 10:
+        logging.warning(f"⏳ Cooldown after exit for {symbol}, skipping entry")
+        return
 
     lot_qty = get_lot_size(kite, symbol)
-    log_data = {
-        "symbol": symbol,
-        "direction": side,
-        "entry_time": entry_time.strftime('%Y-%m-%d %H:%M:%S'),
-        "qty": lot_qty
-    }
-    with open(f"logs/{symbol}_trades.json", "a") as f:
-        f.write(json.dumps(log_data) + "\n")
-
     txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
 
     try:
@@ -172,10 +161,11 @@ def enter_position(kite, symbol, side):
             product="NRML",
             order_type="MARKET"
         )
-        last_trade_times[symbol] = entry_time
+        last_trade_times[symbol] = now
         logging.info(f"✅ Entered {side} for {symbol} with quantity={lot_qty}")
     except Exception as e:
         logging.error(f"❌ Entry failed: {e}")
+
 
 def exit_position(kite, symbol, qty):
     try:
@@ -193,3 +183,81 @@ def exit_position(kite, symbol, qty):
         logging.info(f"🚪 Exited position for {symbol}")
     except Exception as e:
         logging.error(f"❌ Exit failed: {e}")
+
+# === Decision Logic ===
+def handle_trade_decision(kite, symbol, signals):
+    tf_signals = [signals[symbol].get(tf, "") for tf in ["3m", "5m", "10m"]]
+    signal_counts = {"LONG": tf_signals.count("LONG"), "SHORT": tf_signals.count("SHORT")}
+    new_signal = "LONG" if signal_counts["LONG"] >= 2 else "SHORT" if signal_counts["SHORT"] >= 2 else None
+
+    if new_signal:
+        last_action = signals[symbol].get("last_action", "NONE")
+        tradingsymbol = get_active_contract(symbol)
+        current_qty = get_position_quantity(kite, tradingsymbol)
+
+        if new_signal != last_action:
+            total_positions = get_total_stock_positions(kite)
+            if current_qty == 0 and total_positions >= 10 and not is_gold_symbol(tradingsymbol):
+                logging.warning(f"🚫 Max 10 stock/index positions reached. Skipping trade for {symbol}")
+                return
+
+            if current_qty != 0:
+                exit_position(kite, tradingsymbol, current_qty)
+            enter_position(kite, tradingsymbol, new_signal)
+            signals[symbol]["last_action"] = new_signal
+        else:
+            logging.info(f"✅ Already in {new_signal} for {symbol}")
+    else:
+        logging.info(f"❌ Not aligned for {symbol}: {tf_signals}")
+
+# === Webhook ===
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        data = request.json
+        raw_symbol = data.get("symbol", "")
+        signal = data.get("signal", "").lower()
+        timeframe_raw = data.get("timeframe", "").lower()
+        timeframe = timeframe_raw.replace("minutes", "m").replace("min", "m")
+        if not timeframe.endswith("m"):
+            timeframe += "m"
+
+        if signal == "buy":
+            signal = "LONG"
+        elif signal == "sell":
+            signal = "SHORT"
+        else:
+            signal = signal.upper()
+
+        if signal not in ["LONG", "SHORT"]:
+            logging.info(f"🚫 Ignored non-entry signal: {signal}")
+            return jsonify({"status": "ignored"}), 200
+
+        cleaned_symbol = re.sub(r'[^A-Z]', '', raw_symbol.upper())
+
+        logging.info(f"📩 Webhook received: raw={raw_symbol}, cleaned={cleaned_symbol}, signal={signal}, timeframe={timeframe}")
+        if not cleaned_symbol or not signal or not timeframe:
+            return jsonify({"status": "❌ Invalid data"}), 400
+
+        if cleaned_symbol not in signals:
+            signals[cleaned_symbol] = {"3m": "", "5m": "", "10m": "", "last_action": "NONE"}
+
+        signals[cleaned_symbol][timeframe] = signal
+        logging.info(f"🧪 Updated signal memory: {signals[cleaned_symbol]}")
+
+        kite = get_kite_client()
+        if not kite:
+            return jsonify({"status": "❌ Kite client init failed"}), 500
+
+        auto_rollover_positions(kite, cleaned_symbol)
+        handle_trade_decision(kite, cleaned_symbol, signals)
+
+        return jsonify({"status": "✅ Webhook processed"})
+    except Exception as e:
+        logging.error(f"❌ Exception: {e}")
+        return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
+
+# === App Runner ===
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
