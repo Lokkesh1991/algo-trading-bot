@@ -31,6 +31,7 @@ logging.basicConfig(
 # === In-memory signal store ===
 signals = {}
 lot_size_cache = {}
+last_trade_times = {}  # NEW: Track last trade times
 
 @app.route("/")
 def home():
@@ -139,6 +140,11 @@ def auto_rollover_positions(kite, symbol):
 # === Order Logic ===
 def enter_position(kite, symbol, side):
     entry_time = datetime.now()
+    if symbol in last_trade_times:
+        if (entry_time - last_trade_times[symbol]).total_seconds() < 10:
+            logging.warning(f"⏱️ Skipped duplicate entry for {symbol} within 10s block")
+            return
+
     lot_qty = get_lot_size(kite, symbol)
     log_data = {
         "symbol": symbol,
@@ -161,9 +167,11 @@ def enter_position(kite, symbol, side):
             product="NRML",
             order_type="MARKET"
         )
+        last_trade_times[symbol] = entry_time  # Store the last order time
         logging.info(f"✅ Entered {side} for {symbol} with quantity={lot_qty}")
     except Exception as e:
         logging.error(f"❌ Entry failed: {e}")
+
 
 def exit_position(kite, symbol, qty):
     try:
