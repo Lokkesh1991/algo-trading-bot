@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import re
+from time import time
 
 # === Load .env ===
 load_dotenv()
@@ -31,8 +32,8 @@ logging.basicConfig(
 # === In-memory signal store ===
 signals = {}
 lot_size_cache = {}
-last_trade_times = {}  # Track last trade times
-last_exit_times = {}  # Track last exit times
+last_trade_time = {}  # For cooldown logic
+TRADE_COOLDOWN_SECONDS = 20
 
 @app.route("/")
 def home():
@@ -140,15 +141,17 @@ def auto_rollover_positions(kite, symbol):
 
 # === Order Logic ===
 def enter_position(kite, symbol, side):
-    now = datetime.now()
-    if symbol in last_trade_times and (now - last_trade_times[symbol]).total_seconds() < 10:
-        logging.warning(f"⏱️ Skipping duplicate entry for {symbol} within 10s")
-        return
-    if symbol in last_exit_times and (now - last_exit_times[symbol]).total_seconds() < 10:
-        logging.warning(f"⏳ Cooldown after exit for {symbol}, skipping entry")
-        return
-
+    entry_time = datetime.now()
     lot_qty = get_lot_size(kite, symbol)
+    log_data = {
+        "symbol": symbol,
+        "direction": side,
+        "entry_time": entry_time.strftime('%Y-%m-%d %H:%M:%S'),
+        "qty": lot_qty
+    }
+    with open(f"logs/{symbol}_trades.json", "a") as f:
+        f.write(json.dumps(log_data) + "\n")
+
     txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
 
     try:
@@ -161,11 +164,9 @@ def enter_position(kite, symbol, side):
             product="NRML",
             order_type="MARKET"
         )
-        last_trade_times[symbol] = now
         logging.info(f"✅ Entered {side} for {symbol} with quantity={lot_qty}")
     except Exception as e:
         logging.error(f"❌ Entry failed: {e}")
-
 
 def exit_position(kite, symbol, qty):
     try:
@@ -179,7 +180,6 @@ def exit_position(kite, symbol, qty):
             product="NRML",
             order_type="MARKET"
         )
-        last_exit_times[symbol] = datetime.now()
         logging.info(f"🚪 Exited position for {symbol}")
     except Exception as e:
         logging.error(f"❌ Exit failed: {e}")
@@ -187,24 +187,32 @@ def exit_position(kite, symbol, qty):
 # === Decision Logic ===
 def handle_trade_decision(kite, symbol, signals):
     tf_signals = [signals[symbol].get(tf, "") for tf in ["3m", "5m", "10m"]]
-    signal_counts = {"LONG": tf_signals.count("LONG"), "SHORT": tf_signals.count("SHORT")}
-    new_signal = "LONG" if signal_counts["LONG"] >= 2 else "SHORT" if signal_counts["SHORT"] >= 2 else None
-
-    if new_signal:
+    if tf_signals[0] == tf_signals[1] == tf_signals[2] and tf_signals[0] in ["LONG", "SHORT"]:
+        new_signal = tf_signals[0]
         last_action = signals[symbol].get("last_action", "NONE")
         tradingsymbol = get_active_contract(symbol)
         current_qty = get_position_quantity(kite, tradingsymbol)
 
+        now = time()
+        last_time = last_trade_time.get(symbol, 0)
+
+        # ✅ Only skip if it's a repeat of same signal within cooldown window
+        if new_signal == last_action and (now - last_time) < TRADE_COOLDOWN_SECONDS:
+            logging.warning(f"🕒 Skipping duplicate {new_signal} for {symbol} due to cooldown.")
+            return
+
         if new_signal != last_action:
             total_positions = get_total_stock_positions(kite)
-            if current_qty == 0 and total_positions >= 10 and not is_gold_symbol(tradingsymbol):
-                logging.warning(f"🚫 Max 10 stock/index positions reached. Skipping trade for {symbol}")
+            if current_qty == 0 and total_positions >= 12 and not is_gold_symbol(tradingsymbol):
+                logging.warning(f"🚫 Max 12 stock/index positions reached. Skipping trade for {symbol}")
                 return
 
             if current_qty != 0:
                 exit_position(kite, tradingsymbol, current_qty)
+
             enter_position(kite, tradingsymbol, new_signal)
             signals[symbol]["last_action"] = new_signal
+            last_trade_time[symbol] = now
         else:
             logging.info(f"✅ Already in {new_signal} for {symbol}")
     else:
@@ -261,3 +269,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
