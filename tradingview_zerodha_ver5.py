@@ -102,6 +102,24 @@ def get_total_stock_positions(kite):
         logging.error(f"❌ Error counting active stock positions: {e}")
         return 0
 
+# === Contract Resolver ===
+def get_active_contract(symbol):
+    today = datetime.now().date()
+    current_month = today.month
+    current_year = today.year
+    next_month_first = datetime(current_year + int(current_month == 12), (current_month % 12) + 1, 1)
+    last_day = next_month_first - timedelta(days=1)
+    while last_day.weekday() != 0:
+        last_day -= timedelta(days=1)
+    rollover_cutoff = last_day.date() - timedelta(days=4)
+
+    if today > rollover_cutoff:
+        next_month = current_month + 1 if current_month < 12 else 1
+        next_year = current_year if current_month < 12 else current_year + 1
+        return f"{symbol}{str(next_year)[2:]}{datetime(next_year, next_month, 1).strftime('%b').upper()}FUT"
+    else:
+        return f"{symbol}{str(current_year)[2:]}{datetime(current_year, current_month, 1).strftime('%b').upper()}FUT"
+
 # === Order Logic ===
 def enter_position(kite, symbol, side):
     entry_time = datetime.now()
@@ -249,3 +267,4 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
