@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import re
-from time import time
+from time import time, sleep
 
 # === Load .env ===
 load_dotenv()
@@ -32,9 +32,10 @@ logging.basicConfig(
 # === In-memory signal store ===
 signals = {}
 lot_size_cache = {}
-last_trade_time = {}  # For duplicate signal cooldown
-last_entry_time = {}  # For entry cooldown
-last_exit_time = {}   # For exit cooldown
+last_trade_time = {}
+last_entry_time = {}
+last_exit_time = {}
+in_progress_flags = {}
 TRADE_COOLDOWN_SECONDS = 20
 
 @app.route("/")
@@ -101,50 +102,12 @@ def get_total_stock_positions(kite):
         logging.error(f"❌ Error counting active stock positions: {e}")
         return 0
 
-# === Contract Resolver ===
-def get_active_contract(symbol):
-    today = datetime.now().date()
-    current_month = today.month
-    current_year = today.year
-    next_month_first = datetime(current_year + int(current_month == 12), (current_month % 12) + 1, 1)
-    last_day = next_month_first - timedelta(days=1)
-    while last_day.weekday() != 0:
-        last_day -= timedelta(days=1)
-    rollover_cutoff = last_day.date() - timedelta(days=4)
-
-    if today > rollover_cutoff:
-        next_month = current_month + 1 if current_month < 12 else 1
-        next_year = current_year if current_month < 12 else current_year + 1
-        return f"{symbol}{str(next_year)[2:]}{datetime(next_year, next_month, 1).strftime('%b').upper()}FUT"
-    else:
-        return f"{symbol}{str(current_year)[2:]}{datetime(current_year, current_month, 1).strftime('%b').upper()}FUT"
-
-# === Auto Rollover ===
-def auto_rollover_positions(kite, symbol):
-    today = datetime.now().date()
-    current_month = today.month
-    current_year = today.year
-    next_month_first = datetime(current_year + int(current_month == 12), (current_month % 12) + 1, 1)
-    last_day = next_month_first - timedelta(days=1)
-    while last_day.weekday() != 0:
-        last_day -= timedelta(days=1)
-    rollover_cutoff = last_day.date() - timedelta(days=4)
-
-    if today > rollover_cutoff:
-        current_contract = f"{symbol}{str(current_year)[2:]}{datetime(current_year, current_month, 1).strftime('%b').upper()}FUT"
-        next_month = current_month + 1 if current_month < 12 else 1
-        next_year = current_year if current_month < 12 else current_year + 1
-        next_contract = f"{symbol}{str(next_year)[2:]}{datetime(next_year, next_month, 1).strftime('%b').upper()}FUT"
-        qty = get_position_quantity(kite, current_contract)
-        if qty != 0:
-            logging.info(f"🔁 Rollover from {current_contract} to {next_contract}")
-            exit_position(kite, current_contract, qty)
-            enter_position(kite, next_contract, "LONG" if qty > 0 else "SHORT")
-
 # === Order Logic ===
 def enter_position(kite, symbol, side):
     entry_time = datetime.now()
     lot_qty = get_lot_size(kite, symbol)
+    txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
+
     log_data = {
         "symbol": symbol,
         "direction": side,
@@ -153,8 +116,6 @@ def enter_position(kite, symbol, side):
     }
     with open(f"logs/{symbol}_trades.json", "a") as f:
         f.write(json.dumps(log_data) + "\n")
-
-    txn = kite.TRANSACTION_TYPE_BUY if side == "LONG" else kite.TRANSACTION_TYPE_SELL
 
     try:
         kite.place_order(
@@ -186,7 +147,7 @@ def exit_position(kite, symbol, qty):
     except Exception as e:
         logging.error(f"❌ Exit failed: {e}")
 
-# === Decision Logic ===
+# === Trade Decision Logic ===
 def handle_trade_decision(kite, symbol, signals):
     tf_signals = [signals[symbol].get(tf, "") for tf in ["3m", "5m", "10m"]]
     if tf_signals[0] == tf_signals[1] == tf_signals[2] and tf_signals[0] in ["LONG", "SHORT"]:
@@ -194,40 +155,47 @@ def handle_trade_decision(kite, symbol, signals):
         last_action = signals[symbol].get("last_action", "NONE")
         tradingsymbol = get_active_contract(symbol)
         current_qty = get_position_quantity(kite, tradingsymbol)
-
         now = time()
-        last_time = last_trade_time.get(symbol, 0)
 
-        # ✅ Skip repeated same signal
-        if new_signal == last_action and (now - last_time) < TRADE_COOLDOWN_SECONDS:
+        if in_progress_flags.get(symbol, False):
+            logging.warning(f"⏳ Trade already in progress for {symbol}, skipping...")
+            return
+
+        # Duplicate entry check
+        if new_signal == last_action and (now - last_trade_time.get(symbol, 0)) < TRADE_COOLDOWN_SECONDS:
             logging.warning(f"🕒 Skipping duplicate {new_signal} for {symbol} due to cooldown.")
             return
 
-        if new_signal != last_action:
-            total_positions = get_total_stock_positions(kite)
-            if current_qty == 0 and total_positions >= 12 and not is_gold_symbol(tradingsymbol):
-                logging.warning(f"🚫 Max 12 stock/index positions reached. Skipping trade for {symbol}")
-                return
+        in_progress_flags[symbol] = True
 
-            if current_qty != 0:
-                last_exit = last_exit_time.get(symbol, 0)
-                if now - last_exit < TRADE_COOLDOWN_SECONDS:
-                    logging.warning(f"🕒 Skipping duplicate exit for {symbol} due to cooldown.")
+        try:
+            if new_signal != last_action:
+                total_positions = get_total_stock_positions(kite)
+                if current_qty == 0 and total_positions >= 12 and not is_gold_symbol(tradingsymbol):
+                    logging.warning(f"🚫 Max 12 stock/index positions reached. Skipping trade for {symbol}")
                     return
-                exit_position(kite, tradingsymbol, current_qty)
-                last_exit_time[symbol] = now
 
-            last_entry = last_entry_time.get(symbol, 0)
-            if now - last_entry < TRADE_COOLDOWN_SECONDS:
-                logging.warning(f"🕒 Skipping duplicate entry for {symbol} due to cooldown.")
-                return
+                if current_qty != 0:
+                    exit_position(kite, tradingsymbol, current_qty)
+                    last_exit_time[symbol] = now
 
-            enter_position(kite, tradingsymbol, new_signal)
-            last_entry_time[symbol] = now
-            signals[symbol]["last_action"] = new_signal
-            last_trade_time[symbol] = now
-        else:
-            logging.info(f"✅ Already in {new_signal} for {symbol}")
+                    # Wait up to 3 seconds for exit confirmation
+                    for _ in range(6):
+                        sleep(0.5)
+                        if get_position_quantity(kite, tradingsymbol) == 0:
+                            break
+
+                if get_position_quantity(kite, tradingsymbol) == 0:
+                    enter_position(kite, tradingsymbol, new_signal)
+                    last_entry_time[symbol] = now
+                    signals[symbol]["last_action"] = new_signal
+                    last_trade_time[symbol] = now
+                else:
+                    logging.warning(f"⚠️ Position not fully exited yet for {symbol}, entry skipped")
+            else:
+                logging.info(f"✅ Already in {new_signal} for {symbol}")
+        finally:
+            in_progress_flags[symbol] = False
     else:
         logging.info(f"❌ Not aligned for {symbol}: {tf_signals}")
 
@@ -270,10 +238,9 @@ def webhook():
         if not kite:
             return jsonify({"status": "❌ Kite client init failed"}), 500
 
-        auto_rollover_positions(kite, cleaned_symbol)
         handle_trade_decision(kite, cleaned_symbol, signals)
-
         return jsonify({"status": "✅ Webhook processed"})
+
     except Exception as e:
         logging.error(f"❌ Exception: {e}")
         return jsonify({"status": "❌ Crash in webhook", "error": str(e)}), 500
