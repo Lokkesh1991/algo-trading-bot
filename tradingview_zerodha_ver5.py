@@ -1,3 +1,4 @@
+# Updated cooldown logic in handle_trade_decision
 print("🚀 Starting tradingview_zerodha_ver5...")
 
 from flask import Flask, request, jsonify
