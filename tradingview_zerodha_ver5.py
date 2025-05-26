@@ -1,4 +1,3 @@
-# Updated cooldown logic in handle_trade_decision
 print("🚀 Starting tradingview_zerodha_ver5...")
 
 from flask import Flask, request, jsonify
@@ -33,7 +32,9 @@ logging.basicConfig(
 # === In-memory signal store ===
 signals = {}
 lot_size_cache = {}
-last_trade_time = {}  # For cooldown logic
+last_trade_time = {}  # For duplicate signal cooldown
+last_entry_time = {}  # For entry cooldown
+last_exit_time = {}   # For exit cooldown
 TRADE_COOLDOWN_SECONDS = 20
 
 @app.route("/")
@@ -197,7 +198,7 @@ def handle_trade_decision(kite, symbol, signals):
         now = time()
         last_time = last_trade_time.get(symbol, 0)
 
-        # ✅ Only skip if it's a repeat of same signal within cooldown window
+        # ✅ Skip repeated same signal
         if new_signal == last_action and (now - last_time) < TRADE_COOLDOWN_SECONDS:
             logging.warning(f"🕒 Skipping duplicate {new_signal} for {symbol} due to cooldown.")
             return
@@ -209,9 +210,20 @@ def handle_trade_decision(kite, symbol, signals):
                 return
 
             if current_qty != 0:
+                last_exit = last_exit_time.get(symbol, 0)
+                if now - last_exit < TRADE_COOLDOWN_SECONDS:
+                    logging.warning(f"🕒 Skipping duplicate exit for {symbol} due to cooldown.")
+                    return
                 exit_position(kite, tradingsymbol, current_qty)
+                last_exit_time[symbol] = now
+
+            last_entry = last_entry_time.get(symbol, 0)
+            if now - last_entry < TRADE_COOLDOWN_SECONDS:
+                logging.warning(f"🕒 Skipping duplicate entry for {symbol} due to cooldown.")
+                return
 
             enter_position(kite, tradingsymbol, new_signal)
+            last_entry_time[symbol] = now
             signals[symbol]["last_action"] = new_signal
             last_trade_time[symbol] = now
         else:
@@ -270,4 +282,3 @@ def webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-
